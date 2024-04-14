@@ -1,18 +1,21 @@
-CC=gcc
-CFLAGS=-O2 -I./testvectors -Wall -Wextra -std=c89 -pedantic -Wno-long-long
+CC=g++
+CFLAGS=-O2 -I./testvectors -Wall -Wextra -std=c++11 -pedantic -Wno-long-long -g
 BLAKEBINS=blake2b 
+SELFTEST=-DBLAKE2B_SELFTEST
+# SELFTEST=
 
 all:	$(BLAKEBINS) check
 
-blake2b:	blake2b.c
-	$(CC) blake2b.c -o $@ $(CFLAGS) -DBLAKE2B_SELFTEST
+blake2b:	blake2b.cpp
+	$(CC) blake2b.cpp -o $@ $(CFLAGS) $(SELFTEST)
 
 check:	blake2b
 	./blake2b
 
 test:
-	$(CC) $(CFLAGS) -o test test.c blake2b.c
-	./test > test-output.h
+	$(CC) $(CFLAGS) -o test test.cpp blake2b.cpp
+	# ./test > test-output.h
+	gdb test
 
 clean:
 	rm -rf *.o test test-output.h $(BLAKEBINS)
