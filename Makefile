@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-O2 -I../testvectors -Wall -Wextra -std=c89 -pedantic -Wno-long-long
+CFLAGS=-O2 -I./testvectors -Wall -Wextra -std=c89 -pedantic -Wno-long-long
 BLAKEBINS=blake2b 
 
 all:	$(BLAKEBINS) check
@@ -10,11 +10,9 @@ blake2b:	blake2b.c
 check:	blake2b
 	./blake2b
 
-kat:
-		$(CC) $(CFLAGS) -o genkat-c genkat-c.c blake2b-ref.c blake2s-ref.c blake2sp-ref.c blake2bp-ref.c blake2xs-ref.c blake2xb-ref.c
-		$(CC) $(CFLAGS) -o genkat-json genkat-json.c blake2b-ref.c blake2s-ref.c blake2sp-ref.c blake2bp-ref.c blake2xs-ref.c blake2xb-ref.c
-		./genkat-c > blake2-kat.h
-		./genkat-json > blake2-kat.json
+test:
+	$(CC) $(CFLAGS) -o test test.c blake2b.c
+	./test > test-output.h
 
 clean:
-		rm -rf *.o genkat-c genkat-json blake2-kat.h blake2-kat.json $(BLAKEBINS)
+	rm -rf *.o test test-output.h $(BLAKEBINS)
