@@ -174,11 +174,48 @@ int blake2b_init_key( blake2b_state *S, size_t outlen, const void *key, size_t k
     G(r,7,v[ 3],v[ 4],v[ 9],v[14]); \
   } while(0)
 
+
+
+void g( const int r, const int i, uint64_t& a, uint64_t& b, uint64_t& c, uint64_t& d, uint64_t* m ){
+
+  a = a + b + m[blake2b_sigma[r][2*i+0]]; \
+  d = rotr64(d ^ a, 32);                  \
+  c = c + d;                              \
+  b = rotr64(b ^ c, 24);                  \
+  a = a + b + m[blake2b_sigma[r][2*i+1]]; \
+  d = rotr64(d ^ a, 16);                  \
+  c = c + d;                              \
+  b = rotr64(b ^ c, 63);   
+
+}
+
+void round( const int r, uint64_t* v, uint64_t* m ){
+
+  //pardo
+  g(r,0,v[ 0],v[ 4],v[ 8],v[12],m); \
+  g(r,1,v[ 1],v[ 5],v[ 9],v[13],m); \
+  g(r,2,v[ 2],v[ 6],v[10],v[14],m); \
+  g(r,3,v[ 3],v[ 7],v[11],v[15],m); \
+  //endpardo
+
+  //pardo
+  g(r,4,v[ 0],v[ 5],v[10],v[15],m); \
+  g(r,5,v[ 1],v[ 6],v[11],v[12],m); \
+  g(r,6,v[ 2],v[ 7],v[ 8],v[13],m); \
+  g(r,7,v[ 3],v[ 4],v[ 9],v[14],m); \
+  //endpardo
+
+}
+
 static void blake2b_compress( blake2b_state *S, const uint8_t block[BLAKE2B_BLOCKBYTES] )
 {
   uint64_t m[16];
   uint64_t v[16];
   size_t i;
+
+  printf( "in par code\n");
+  
+  for( int i= 0 ;i<5 ; i++ ) printf( "block[%d]=%i\n", i, block[i] );
 
   for( i = 0; i < 16; ++i ) {
     m[i] = load64( block + i * sizeof( m[i] ) );
@@ -196,19 +233,29 @@ static void blake2b_compress( blake2b_state *S, const uint8_t block[BLAKE2B_BLOC
   v[13] = blake2b_IV[5] ^ S->t[1];
   v[14] = blake2b_IV[6] ^ S->f[0];
   v[15] = blake2b_IV[7] ^ S->f[1];
+  
+  printf("m[15] = %llu\n", m[15]);
 
-  ROUND( 0 );
-  ROUND( 1 );
-  ROUND( 2 );
-  ROUND( 3 );
-  ROUND( 4 );
-  ROUND( 5 );
-  ROUND( 6 );
-  ROUND( 7 );
-  ROUND( 8 );
-  ROUND( 9 );
-  ROUND( 10 );
-  ROUND( 11 );
+  for( int r=0 ; r<12 ; r++ ){
+
+    round(r, v, m );
+  }
+
+  printf("m[15] = %llu\n", m[15]);
+
+
+  // ROUND( 0 );
+  // ROUND( 1 );
+  // ROUND( 2 );
+  // ROUND( 3 );
+  // ROUND( 4 );
+  // ROUND( 5 );
+  // ROUND( 6 );
+  // ROUND( 7 );
+  // ROUND( 8 );
+  // ROUND( 9 );
+  // ROUND( 10 );
+  // ROUND( 11 );
 
   for( i = 0; i < 8; ++i ) {
     S->h[i] = S->h[i] ^ v[i] ^ v[i + 8];
@@ -225,20 +272,26 @@ int blake2b_update( blake2b_state *S, const void *pin, size_t inlen )
   {
     size_t left = S->buflen;
     size_t fill = BLAKE2B_BLOCKBYTES - left;
-    if( inlen > fill )
-    {
+
+    printf("inlen= %zu, left= %zu\n", inlen, left );
+
+    if( inlen > fill ){
+
       S->buflen = 0;
       memcpy( S->buf + left, in, fill ); /* Fill buffer */
       blake2b_increment_counter( S, BLAKE2B_BLOCKBYTES );
       blake2b_compress( S, S->buf ); /* Compress */
       in += fill; inlen -= fill;
+
       while(inlen > BLAKE2B_BLOCKBYTES) {
         blake2b_increment_counter(S, BLAKE2B_BLOCKBYTES);
         blake2b_compress( S, in );
         in += BLAKE2B_BLOCKBYTES;
         inlen -= BLAKE2B_BLOCKBYTES;
       }
+
     }
+
     memcpy( S->buf + S->buflen, in, inlen );
     S->buflen += inlen;
   }
@@ -285,18 +338,23 @@ int blake2b( void *out, size_t outlen, const void *in, size_t inlen, const void 
 
   if( keylen > BLAKE2B_KEYBYTES ) return -1;
 
-  if( keylen > 0 )
-  {
+  if( keylen > 0 ){
+
     if( blake2b_init_key( S, outlen, key, keylen ) < 0 ) return -1;
-  }
-  else
-  {
+
+  }else{
+
     if( blake2b_init( S, outlen ) < 0 ) return -1;
+
   }
 
+  uint8_t* input = ( uint8_t * )in;
+  
+  for( int i=0 ; i<5 ; i++ ) printf( "input[%d]=%i\n", i, input[i] );
   blake2b_update( S, ( const uint8_t * )in, inlen );
   blake2b_final( S, out, outlen );
   return 0;
+
 }
 
 int blake2( void *out, size_t outlen, const void *in, size_t inlen, const void *key, size_t keylen ) {
