@@ -71,9 +71,14 @@ static void store64( void *dst, uint64_t w )
 #endif
 }
 
-static uint64_t rotr64( const uint64_t w, const unsigned c )
+static uint64_t rotr64(  const uint64_t w, const unsigned c )
 {
-  return ( w >> c ) | ( w << ( 64 - c ) );
+
+  uint64_t right_w = w >> c ;
+  uint64_t left_w = w << ( 64 - c);
+
+  return right_w | left_w ;
+
 }
 
 static void store32( void *dst, uint32_t w )
