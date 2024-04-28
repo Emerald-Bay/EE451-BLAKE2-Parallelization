@@ -1,28 +1,9 @@
-
-/*
-   BLAKE2 reference source code package - reference C implementations
-
-   Copyright 2012, Samuel Neves <sneves@dei.uc.pt>.  You may use this under the
-   terms of the CC0, the OpenSSL Licence, or the Apache Public License 2.0, at
-   your option.  The terms of these licenses can be found at:
-
-   - CC0 1.0 Universal : http://creativecommons.org/publicdomain/zero/1.0
-   - OpenSSL license   : https://www.openssl.org/source/license.html
-   - Apache 2.0        : http://www.apache.org/licenses/LICENSE-2.0
-
-   More information about the BLAKE2 hash function can be found at
-   https://blake2.net.
-
-   The parallalization version using Pthread 
-   Apri 16, 2024 Tim Chang.
-
-*/
-
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <omp.h>
 
 #include "blake2.h"
 #include "blake2-impl.h"
@@ -114,8 +95,6 @@ int blake2b_init_param( blake2b_state *S, const blake2b_param *P )
   return 0;
 }
 
-
-
 int blake2b_init( blake2b_state *S, size_t outlen )
 {
   blake2b_param P[1];
@@ -160,174 +139,110 @@ int blake2b_init_key( blake2b_state *S, size_t outlen, const void *key, size_t k
   memset( P->personal, 0, sizeof( P->personal ) );
 
   if( blake2b_init_param( S, P ) < 0 ) return -1;
-
   {
     uint8_t block[BLAKE2B_BLOCKBYTES];
     memset( block, 0, BLAKE2B_BLOCKBYTES );
     memcpy( block, key, keylen );
     blake2b_update( S, block, BLAKE2B_BLOCKBYTES );
-    secure_zero_memory( block, BLAKE2B_BLOCKBYTES ); /* Burn the key from stack */
+    secure_zero_memory( block, BLAKE2B_BLOCKBYTES );
   }
   return 0;
 }
 
 void* g( void* threadarg ){
+  int col_array[4][4] = {{0,4,8,12},
+                          {1,5,9,13},
+                          {2,6,10,14},
+                          {3,7,11,15}};
 
+  int dia_array[4][4] = {{0,5,10,15},
+                          {1,6,11,12},
+                          {2,7,8,13},
+                          {3,4,9,14}};
 
-    int col_array[4][4] = {{0,4,8,12},
-                           {1,5,9,13},
-                           {2,6,10,14},
-                           {3,7,11,15}};
+  thread_data* data = (thread_data* ) threadarg;
+  const int thread_id = data->id;
 
-    int dia_array[4][4] = {{0,5,10,15},
-                           {1,6,11,12},
-                           {2,7,8,13},
-                           {3,4,9,14}};
-    
-    thread_data* data = (thread_data* ) threadarg;
-    const int thread_id = data->id;
+  for( int r=0 ; r<12 ; ++r ){
+      int i = thread_id;
+      uint64_t* m = data->m;
 
-    printf( "%d thread, start g\n", thread_id );
+      // a = a + b + m[blake2b_sigma[r][2*i+0]];
+      data->v[col_array[thread_id][0]] = data->v[col_array[thread_id][0]] + data->v[col_array[thread_id][1]] + m[blake2b_sigma[r][2*i+0]]; 
+      // d = rotr64(d ^ a, 32);
+      data->v[col_array[thread_id][3]] = rotr64(data->v[col_array[thread_id][3]] ^ data->v[col_array[thread_id][0]], 32);                  
+      // c = c + d;
+      data->v[col_array[thread_id][2]] = data->v[col_array[thread_id][2]] + data->v[col_array[thread_id][3]];                              
+      // b = rotr64(b ^ c, 24);
+      data->v[col_array[thread_id][1]] = rotr64(data->v[col_array[thread_id][1]] ^ data->v[col_array[thread_id][2]], 24);                  
+      // a = a + b + m[blake2b_sigma[r][2*i+1]];
+      data->v[col_array[thread_id][0]] = data->v[col_array[thread_id][0]] + data->v[col_array[thread_id][1]] + m[blake2b_sigma[r][2*i+1]]; 
+      // d = rotr64(d ^ a, 16);
+      data->v[col_array[thread_id][3]] = rotr64(data->v[col_array[thread_id][3]] ^ data->v[col_array[thread_id][0]], 16);                  
+      // c = c + d;
+      data->v[col_array[thread_id][2]] = data->v[col_array[thread_id][2]] + data->v[col_array[thread_id][3]];                              
+      // b = rotr64(b ^ c, 63);
+      data->v[col_array[thread_id][1]] = rotr64(data->v[col_array[thread_id][1]] ^ data->v[col_array[thread_id][2]], 63);
 
-    for( int r=0 ; r<12 ; ++r ){
-        int i = thread_id;
+      // Barrier Begin
 
-        uint64_t& a = data->v[col_array[thread_id][0]];
-        uint64_t& b = data->v[col_array[thread_id][1]];
-        uint64_t& c = data->v[col_array[thread_id][2]];
-        uint64_t& d = data->v[col_array[thread_id][3]];
-        uint64_t* m = data->m;
+      pthread_mutex_lock(&counter_mutex);
 
-        a = a + b + m[blake2b_sigma[r][2*i+0]]; 
-        d = rotr64(d ^ a, 32);                  
-        c = c + d;                              
-        b = rotr64(b ^ c, 24);                  
-        a = a + b + m[blake2b_sigma[r][2*i+1]]; 
-        d = rotr64(d ^ a, 16);                  
-        c = c + d;                              
-        b = rotr64(b ^ c, 63);  
+      ++counter;
 
-        pthread_mutex_lock(&counter_mutex);
+      if (counter != 4) {
+          pthread_cond_wait(&cv,&counter_mutex);
+      }
+      else {
+          counter = 0;
+          pthread_cond_broadcast(&cv);
+      }
+      pthread_mutex_unlock(&counter_mutex);
 
-        ++counter;
+      //Barrier End
 
-        if (counter != 4) {
-            pthread_cond_wait(&cv,&counter_mutex);
-        }
-        else {
-            pthread_cond_broadcast(&cv);
-            counter = 0;
-        }
-        pthread_mutex_unlock(&counter_mutex);
+      i = thread_id+4;
 
-        i = thread_id+4;
-        a = data->v[ dia_array[thread_id][0]];
-        b = data->v[ dia_array[thread_id][1]];
-        c = data->v[ dia_array[thread_id][2]];
-        d = data->v[ dia_array[thread_id][3]];
+      // a = a + b + m[blake2b_sigma[r][2*i+0]];
+      data->v[ dia_array[thread_id][0]] = data->v[ dia_array[thread_id][0]] + data->v[ dia_array[thread_id][1]] + m[blake2b_sigma[r][2*i+0]]; 
+      // d = rotr64(d ^ a, 32);
+      data->v[ dia_array[thread_id][3]] = rotr64(data->v[ dia_array[thread_id][3]] ^ data->v[ dia_array[thread_id][0]], 32);                  
+      // c = c + d;
+      data->v[ dia_array[thread_id][2]] = data->v[ dia_array[thread_id][2]] + data->v[ dia_array[thread_id][3]];                              
+      // b = rotr64(b ^ c, 24);
+      data->v[ dia_array[thread_id][1]] = rotr64(data->v[ dia_array[thread_id][1]] ^ data->v[ dia_array[thread_id][2]], 24);                  
+      // a = a + b + m[blake2b_sigma[r][2*i+1]];
+      data->v[ dia_array[thread_id][0]] = data->v[ dia_array[thread_id][0]] + data->v[ dia_array[thread_id][1]] + m[blake2b_sigma[r][2*i+1]]; 
+      // d = rotr64(d ^ a, 16);
+      data->v[ dia_array[thread_id][3]] = rotr64(data->v[ dia_array[thread_id][3]] ^ data->v[ dia_array[thread_id][0]], 16);                  
+      // c = c + d;
+      data->v[ dia_array[thread_id][2]] = data->v[ dia_array[thread_id][2]] + data->v[ dia_array[thread_id][3]];                              
+      // b = rotr64(b ^ c, 63);
+      data->v[ dia_array[thread_id][1]] = rotr64(data->v[ dia_array[thread_id][1]] ^ data->v[ dia_array[thread_id][2]], 63);  
 
-        a = a + b + m[blake2b_sigma[r][2*i+0]]; 
-        d = rotr64(d ^ a, 32);                  
-        c = c + d;                              
-        b = rotr64(b ^ c, 24);                  
-        a = a + b + m[blake2b_sigma[r][2*i+1]]; 
-        d = rotr64(d ^ a, 16);                  
-        c = c + d;                              
-        b = rotr64(b ^ c, 63);  
+      //Barrier Begin
 
-        pthread_mutex_lock(&counter_mutex);
+      pthread_mutex_lock(&counter_mutex);
 
-        ++counter;
+      ++counter;
 
-        if (counter != 4) {
-            pthread_cond_wait(&cv,&counter_mutex);
-        }
-        else {
-            pthread_cond_broadcast(&cv);
-            counter = 0;
-        }
-        pthread_mutex_unlock(&counter_mutex);
-    }
+      if (counter != 4) {
+          pthread_cond_wait(&cv,&counter_mutex);
+      }
+      else {
+          counter = 0;
+          pthread_cond_broadcast(&cv);
+      }
+      pthread_mutex_unlock(&counter_mutex);
+
+      //Barrier End
+  }
 
   return NULL;
-
-
 }
-
-// void round( const int r, uint64_t* v, uint64_t* m, pthread_t* threads, thread_data* data){
-
-//   int rc;
-
-//   // pthread_t threads[4];
-
-//   // thread_data data[4];
-
-//   // g(r,0, v, 0, 4, 8, 12, m );
-//   // g(r,1, v, 1, 5, 9, 13, m); 
-//   // g(r,2, v, 2, 6, 10, 14, m); 
-//   // g(r,3, v, 3, 7, 11, 15, m); 
-
-//   for( int i=0 ; i<4 ; ++i ){
-
-//     data[i].r = r;
-//     data[i].i = i;
-//     data[i].v = v;
-//     data[i].a_index = 0+i;
-//     data[i].b_index = 4+i;
-//     data[i].c_index = 8+i;
-//     data[i].d_index = 12+i;
-//     data[i].m = m;
-
-//     rc = pthread_create( &threads[i], NULL, g, (void*)&data[i] );
-//     if (rc) { printf("ERROR; return code from pthread_create() is %d\n", rc); exit(-1);}
-
-//   }
-
-//   for( int i=0 ; i<4 ; ++i ){
-
-// 		if( pthread_join( threads[i], NULL )!=0 ) printf("Joining thread %d failed\n ", i );
-
-// 	} 
-
-//   // g(r,4,v[ 0],v[ 5],v[10],v[15],m); 
-//   // g(r,5,v[ 1],v[ 6],v[11],v[12],m); 
-//   // g(r,6,v[ 2],v[ 7],v[ 8],v[13],m); 
-//   // g(r,7,v[ 3],v[ 4],v[ 9],v[14],m); 
-
-//   int index_arr[4][4] = {{0,5,10,15},
-//                         {1,6,11,12},
-//                         {2,7,8,13},
-//                         {3,4,9,14} };
-
-//   for( int i=0 ; i<4 ; ++i ){
-
-//     data[i].r = r;
-//     data[i].i = i+4;
-//     data[i].v = v;
-//     data[i].a_index = index_arr[i][0];
-//     data[i].b_index = index_arr[i][1];
-//     data[i].c_index = index_arr[i][2];
-//     data[i].d_index = index_arr[i][3];
-//     data[i].m = m;
-
-//     rc = pthread_create( &threads[i], NULL, g, (void*)&data[i] );
-//     if (rc) { printf("ERROR; return code from pthread_create() is %d\n", rc); exit(-1);}
-
-//   }
-
-//   for( int i=0 ; i<4 ; ++i ){
-
-// 		if( pthread_join( threads[i], NULL )!=0 ) printf("Joining thread %d failed\n ", i );
-
-// 	} 
-
-//   return;
-// }
 
 static void blake2b_compress( blake2b_state *S, const uint8_t block[BLAKE2B_BLOCKBYTES] )
 {
-  
-  
   uint64_t m[16];
   uint64_t v[16];
   size_t i;
@@ -352,42 +267,27 @@ static void blake2b_compress( blake2b_state *S, const uint8_t block[BLAKE2B_BLOC
   pthread_t threads[4];
   thread_data data[4];
 
-  int rc;
-
   pthread_cond_init( &cv, NULL );
   pthread_mutex_init( &counter_mutex, NULL );
   counter = 0;
 
   for( int i=0 ; i<4 ; ++i ){
-
     data[i].id = i;
     data[i].m = m;
     data[i].v = v;
 
-   
-    rc = pthread_create( &threads[i], NULL, g, (void*)&data[i] );
+    int rc = pthread_create( &threads[i], NULL, g, (void*)&data[i] );
     if (rc) { printf("ERROR; return code from pthread_create() is %d\n", rc); exit(-1);}
-
-     printf("made %d thread\n", i);
-
   }
 
   for( int i=0 ; i<4 ; ++i ){
-
     if( pthread_join( threads[i], NULL )!=0 ) printf("Joining thread %d failed\n ", i );
-
-  } 
-//   for( int r=0 ; r<12 ; r++ ){
-//     round(r, v, m, threads, data);
-//   }
+  }
 
   for( i = 0; i < 8; ++i ) {
     S->h[i] = S->h[i] ^ v[i] ^ v[i + 8];
   }
 }
-
-#undef G
-#undef ROUND
 
 int blake2b_update( blake2b_state *S, const void *pin, size_t inlen )
 {
@@ -411,7 +311,6 @@ int blake2b_update( blake2b_state *S, const void *pin, size_t inlen )
         in += BLAKE2B_BLOCKBYTES;
         inlen -= BLAKE2B_BLOCKBYTES;
       }
-
     }
 
     memcpy( S->buf + S->buflen, in, inlen );
@@ -444,29 +343,26 @@ int blake2b_final( blake2b_state *S, void *out, size_t outlen )
   return 0;
 }
 
-/* inlen, at least, should be uint64_t. Others can be size_t. */
 int blake2b( void *out, size_t outlen, const void *in, size_t inlen, const void *key, size_t keylen )
 {
   blake2b_state S[1];
-
-  printf("Parallelization using pthread:\n");
 
   /* Verify parameters */
   if ( NULL == in && inlen > 0 ) return -1;
 
   if ( NULL == out ) return -1;
 
-  if( NULL == key && keylen > 0 ) return -1;
+  if ( NULL == key && keylen > 0 ) return -1;
 
-  if( !outlen || outlen > BLAKE2B_OUTBYTES ) return -1;
+  if ( !outlen || outlen > BLAKE2B_OUTBYTES ) return -1;
 
-  if( keylen > BLAKE2B_KEYBYTES ) return -1;
+  if ( keylen > BLAKE2B_KEYBYTES ) return -1;
 
-  if( keylen > 0 ){
+  if ( keylen > 0 ) {
 
     if( blake2b_init_key( S, outlen, key, keylen ) < 0 ) return -1;
 
-  }else{
+  } else {
 
     if( blake2b_init( S, outlen ) < 0 ) return -1;
 
@@ -475,19 +371,7 @@ int blake2b( void *out, size_t outlen, const void *in, size_t inlen, const void 
   blake2b_update( S, ( const uint8_t * )in, inlen );
   blake2b_final( S, out, outlen );
   return 0;
-
 }
-
-int blake2( void *out, size_t outlen, const void *in, size_t inlen, const void *key, size_t keylen ) {
-  return blake2b(out, outlen, in, inlen, key, keylen);
-}
-
-#if defined(SUPERCOP)
-int crypto_hash( unsigned char *out, unsigned char *in, unsigned long long inlen )
-{
-  return blake2b( out, BLAKE2B_OUTBYTES, in, inlen, NULL, 0 );
-}
-#endif
 
 #if defined(BLAKE2B_SELFTEST)
 #include <string.h>
@@ -512,7 +396,8 @@ int main( void )
 
     if( 0 != memcmp( hash, blake2b_keyed_kat[i], BLAKE2B_OUTBYTES ) )
     {
-      goto fail;
+      puts("error");
+      return -1;
     }
   }
 
@@ -526,33 +411,35 @@ int main( void )
       int err = 0;
 
       if( (err = blake2b_init_key(&S, BLAKE2B_OUTBYTES, key, BLAKE2B_KEYBYTES)) < 0 ) {
-        goto fail;
+        puts("error");
+        return -1;
       }
 
       while (mlen >= step) {
         if ( (err = blake2b_update(&S, p, step)) < 0 ) {
-          goto fail;
+          puts("error");
+          return -1;
         }
         mlen -= step;
         p += step;
       }
       if ( (err = blake2b_update(&S, p, mlen)) < 0) {
-        goto fail;
+        puts("error");
+        return -1;
       }
       if ( (err = blake2b_final(&S, hash, BLAKE2B_OUTBYTES)) < 0) {
-        goto fail;
+        puts("error");
+        return -1;
       }
 
       if (0 != memcmp(hash, blake2b_keyed_kat[i], BLAKE2B_OUTBYTES)) {
-        goto fail;
+        puts("error");
+        return -1;
       }
     }
   }
 
   puts( "ok" );
   return 0;
-fail:
-  puts("error");
-  return -1;
 }
 #endif
